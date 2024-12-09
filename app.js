@@ -1,335 +1,258 @@
-const express = require('express')
-const path = require('path')
-const {open} = require('sqlite')
-const sqlite3 = require('sqlite3').verbose()
-const cors = require('cors')
-
+const express = require('express');
+const cors = require('cors');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const sqlite3 = require('sqlite3').verbose();
+require('dotenv').config();
 
-const app = express()
-app.use(express.json())
-app.use(cors())
+const app = express();
+app.use(express.json());
+app.use(cors());
 
-const dbPath = path.join(__dirname, 'taskManagement.db')
-let db = null
 
-const createTables = async () => {
-    try {
-        // Creating 'user' table
-        await db.run(`
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL,
-                password TEXT NOT NULL
-            );
-        `);
-
-        // Creating 'tasks' table
-        await db.run(`
-            CREATE TABLE IF NOT EXISTS tasks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                title TEXT NOT NULL,
-                description TEXT,
-                status TEXT,
-                FOREIGN KEY(user_id) REFERENCES user(id) ON DELETE CASCADE
-            );
-        `);
-    } catch (e) {
-        console.error('Error creating tables:', e.message);
+// Initialize SQLite Database
+const db = new sqlite3.Database('myDatabase.db', (err) => {
+    if (err) {
+        console.error('Failed to connect to SQLite:', err.message);
+        process.exit(1);
     }
+    console.log('Connected to SQLite database');
+});
+
+const initializeTables = () => {
+    db.serialize(() => {
+        // Check and create users table
+        db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='users';", (err, row) => {
+            if (!row) {
+                db.run(
+                    `CREATE TABLE users (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        username TEXT NOT NULL,
+                        email TEXT UNIQUE NOT NULL,
+                        password TEXT NOT NULL
+                    );`,
+                    (err) => {
+                        if (err) {
+                            console.error('Error creating users table:', err.message);
+                        } else {
+                            console.log('users table created.');
+                        }
+                    }
+                );
+            } else {
+                console.log('users table already exists.');
+            }
+        });
+
+        // Check and create tasks table (with description column)
+        db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='tasks';", (err, row) => {
+            if (!row) {
+                db.run(
+                    `CREATE TABLE tasks (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        user_id INTEGER NOT NULL,
+                        title TEXT NOT NULL,
+                        description TEXT,  -- Added description column
+                        status TEXT NOT NULL,
+                        FOREIGN KEY (user_id) REFERENCES users(id)
+                    );`,
+                    (err) => {
+                        if (err) {
+                            console.error('Error creating tasks table:', err.message);
+                        } else {
+                            console.log('tasks table created.');
+                        }
+                    }
+                );
+            } else {
+                console.log('tasks table already exists.');
+            }
+        });
+    });
 };
 
-const initializeDBAndServer = async () => {
-    try{
-        db = await open({
-            filename: dbPath,
-            driver: sqlite3.Database,
-        })
+// Initialize tables
+initializeTables();
 
-        // Creating Tables
-        await createTables()
+// Middleware for JWT verification
+const middlewareJwtToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const jwtToken = authHeader && authHeader.split(' ')[1];
 
-        // Starting Server
-        app.listen(3000, () => {
-            console.log('Server running at Port: 3000')
-        })
+    if (!jwtToken) {
+        return res.status(401).json({ errorMsg: 'Invalid JWT Token' });
     }
-    catch(e){
-        console.log(`DB Error: ${e.message}`)
-        process.exit(1)
-    }
-}
 
-initializeDBAndServer()
-
-// Middleware Function
-
-const authenticateToken = (request, response, next) => {
-    let jwtToken
-  
-    const authHeader = request.headers['authorization']
-  
-    if (authHeader !== undefined) {
-      jwtToken = authHeader.split(' ')[1]
-    }
-  
-    if (jwtToken === undefined) {
-      response.status(401)
-      response.send('Invalid JWT Token')
-    } else {
-      jwt.verify(jwtToken, 'MY_SECRET_TOKEN', async (error, payload) => {
-        if (error) {
-          response.status(401)
-          response.send('Invalid JWT Token')
-        } else {
-          const username = payload.username
-  
-          request.username = username
-  
-          next()
+    jwt.verify(jwtToken, process.env.JWT_SECRET, (err, payload) => {
+        if (err) {
+            return res.status(401).json({ errorMsg: 'Invalid JWT Token' });
         }
-      })
-    }
-}
+        req.email = payload.email; 
+        next();
+    });
+};
 
+// API-1: Register a New User
+app.post('/register', (req, res) => {
+    const { username, email, password } = req.body;
 
-// API - 1 -- Register User
+    db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user) => {
+        if (err) {
+            return res.status(500).json({ errorMsg: 'Database error' });
+        }
 
-app.post('/api/auth/register', async (request, response) => {
-    const {username, password} = request.body
-    
-    try {
+        if (user) {
+            return res.status(401).json({ errorMsg: 'User Already Exists' });
+        }
 
-        // Checking if user already registered or not
-
-        const checkUserData = `SELECT * FROM users WHERE username = '${username}';`
-        const getCheckedUserData = await db.get(checkUserData)
-        
-        if (getCheckedUserData === undefined) {
-            if (password.length < 8) {
-                response.status(400).send({message: 'Password is too short'})
-            } else {
-                const hashedPassword = await bcrypt.hash(password, 10)
-                const createNewUser = `INSERT INTO users(username, password)
-                VALUES(
-                    '${username}',
-                    '${hashedPassword}'
-                );`
-        
-                await db.run(createNewUser)
-
-                response.status(201).send({message: 'User created successfully'})
+        const hashedPassword = await bcrypt.hash(password, 10);
+        db.run(
+            'INSERT INTO users (username, email, password) VALUES (?, ?, ?)',
+            [username, email, hashedPassword],
+            function (err) {
+                if (err) {
+                    return res.status(500).json({ errorMsg: 'Database error' });
+                }
+                res.status(201).json({ message: 'User Registered Successfully' });
             }
-        } else {
-        response.status(400).send({message: 'User already exists'})
+        );
+    });
+});
+
+// API-2: User Login
+app.post('/login', (req, res) => {
+    const { email, password } = req.body;
+
+    db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user) => {
+        if (err) {
+            return res.status(500).json({ errorMsg: 'Database error' });
         }
-    }
-    catch(e){
-        response.status(500).send({message: "Internal Server Error"})
-    }
-})
 
-
-// API - 2 -- Login Existing User
-
-app.post('/api/auth/login', async (request, response) => {
-    const {username, password} = request.body
-  
-    // Check whether user is already registered or not
-  
-    const checkUser = `SELECT * FROM users WHERE username = '${username}';`
-    const userDetails = await db.get(checkUser)
-
-    if (userDetails !== undefined) {
-      const validateUserPassword = await bcrypt.compare(
-        password,
-        userDetails.password,
-      )
-  
-      if (validateUserPassword === true) {
-        const payload = {
-          username: username,
+        if (!user) {
+            return res.status(401).json({ errorMsg: "User Doesn't Exist" });
         }
-  
-        const jwtToken = jwt.sign(payload, 'MY_SECRET_TOKEN')
-  
-        response.send({jwtToken})
-      } else {
-        response.status(400)
-  
-        response.send({message: 'Invalid Password'})
-      }
-    } else {
-      response.status(400)
-      response.send({message: 'Invalid User'})
-    }
-})
 
-
-// API - 3 -- Create New Task
-
-app.post('/api/tasks', authenticateToken, async(request, response) => {
-    const {username} = request
-    const {title, description, status} = request.body
-
-    try{
-        const checkUser = `SELECT * FROM users WHERE username = '${username}';`
-        const verifyUser = await db.get(checkUser)
-
-        if(verifyUser !== undefined){
-            const getUserId = `SELECT id FROM users WHERE username = '${username}';`
-            const userId = await db.get(getUserId)
-
-            const createNewTask = `INSERT INTO tasks(user_id, title, description, status)
-            VALUES(
-                '${userId.id}',
-                '${title}',
-                '${description}',
-                '${status}'
-            )`
-
-            await db.run(createNewTask)
-            response.status(201).send({message: "Task Created Successfully"})
+        const verifyPassword = await bcrypt.compare(password, user.password);
+        if (!verifyPassword) {
+            return res.status(401).json({ errorMsg: 'Incorrect Password' });
         }
-        else{
-            response.status(400).send({message: "Invalid User Request"})
+
+        const token = jwt.sign({ email: user.email }, process.env.JWT_SECRET);
+        res.status(201).json({ jwtToken: token });
+    });
+});
+
+// API-3: Create a task
+app.post('/tasks', middlewareJwtToken, (req, res) => {
+    const { title, description, status } = req.body;
+
+    db.get('SELECT id FROM users WHERE email = ?', [req.email], (err, user) => {
+        if (err || !user) {
+            return res.status(500).json({ errorMsg: 'Database error or user not found' });
         }
+
+        db.run(
+            'INSERT INTO tasks (user_id, title, description, status) VALUES (?, ?, ?, ?)',
+            [user.id, title, description, status],
+            function (err) {
+                if (err) {
+                    return res.status(500).json({ errorMsg: 'Database error' });
+                }
+                res.status(201).json({ message: 'task added successfully', taskId: this.lastID });
+            }
+        );
+    });
+});
+
+// API-4: Update a task
+app.put('/tasks/:id', middlewareJwtToken, (req, res) => {
+    const { id } = req.params;
+    const { title, description, status } = req.body;
+
+    const updates = [];
+    const params = [];
+
+    if (title) {
+        updates.push('title = ?');
+        params.push(title);
     }
-    catch(e){
-        response.status(500).send({message: "Internal Server Error"})
+    if (description) {
+        updates.push('description = ?');
+        params.push(description);
     }
-})
+    if (status) {
+        updates.push('status = ?');
+        params.push(status);
+    }
 
+    if (updates.length === 0) {
+        return res.status(400).json({ errorMsg: 'No valid fields to update' });
+    }
 
-// API - 4 -- Update Task Status
+    db.get('SELECT id FROM users WHERE email = ?', [req.email], (err, user) => {
+        if (err || !user) {
+            return res.status(500).json({ errorMsg: 'Database error or user not found' });
+        }
 
-app.put('/api/tasks/:id', authenticateToken, async(request, response) => {
-    const {username} = request
-    const {id} = request.params
-    const {title, description,status} = request.body
+        params.push(user.id, id);
 
-    try{
-        const checkUser = `SELECT * FROM users WHERE username = '${username}';`
-        const userDetails = await db.get(checkUser)
-
-        if(userDetails !== undefined){
-            const getUserId = `SELECT id FROM users WHERE username = '${username}';`
-            const userId = await db.get(getUserId)
-            
-            // To check whether the task belongs to the same user
-
-            const checkUserTask = `SELECT * FROM tasks WHERE id = '${id}' AND user_id = '${userId.id}';`
-            const verifyUserTask = await db.get(checkUserTask)
-            
-            if(verifyUserTask !== undefined){
-                let updatedData = []
-
-                if(title){
-                    updatedData.push(`title = '${title}'`)
+        db.run(
+            `UPDATE tasks SET ${updates.join(', ')} WHERE user_id = ? AND id = ?`,
+            params,
+            function (err) {
+                if (err) {
+                    return res.status(500).json({ errorMsg: 'Database error' });
                 }
 
-                if(description){
-                    updatedData.push(`description = '${description}'`)
+                if (this.changes === 0) {
+                    return res.status(404).json({ errorMsg: 'task not found' });
                 }
 
-                if(status){
-                    updatedData.push(`status = '${status}'`)
+                res.status(200).json({ message: 'task updated successfully' });
+            }
+        );
+    });
+});
+
+// API-5: Delete a task
+app.delete('/tasks/:id', middlewareJwtToken, (req, res) => {
+    const { id } = req.params;
+
+    db.get('SELECT id FROM users WHERE email = ?', [req.email], (err, user) => {
+        if (err || !user) {
+            return res.status(500).json({ errorMsg: 'Database error or user not found' });
+        }
+
+        db.run(
+            'DELETE FROM tasks WHERE user_id = ? AND id = ?',
+            [user.id, id],
+            function (err) {
+                if (err) {
+                    return res.status(500).json({ errorMsg: 'Database error' });
                 }
 
-                if(updatedData.length > 0){
-                    const updateTask = `UPDATE tasks SET ${updatedData.join(', ')} WHERE id = '${id}' AND user_id = '${userId.id}';`
-                    await db.run(updateTask)
-                    response.status(201).send({message: "Task Updated Successfully"})
+                if (this.changes === 0) {
+                    return res.status(404).json({ errorMsg: 'task not found' });
                 }
+
+                res.status(200).json({ message: 'task deleted successfully' });
             }
-            else{
-                response.status(400).send({message: "Invalid Task Details"})
-            }
-        }
-        else{
-            response.status(400).send({message: "Invalid User Request"})
-        }
-    }
-    catch(e){
-        response.status(500).send({message: "Internal Server Error"})
-    }
-})
+        );
+    });
+});
 
-
-// API - 5 -- Get All Tasks
-
-app.get('/api/tasks', authenticateToken, async(request, response) => {
-    const {username} = request
-    const {status} = request.body
-
-    try{
-        const checkUser = `SELECT * FROM users WHERE username = '${username}';`
-        const userDetails = await db.get(checkUser)
-
-        if(userDetails !== undefined){
-            const getUserId = `SELECT id FROM users WHERE username = '${username}';`
-            const userId = await db.get(getUserId)
-            
-            let getTasks
-            if (status) {
-                getTasks = `SELECT * FROM tasks WHERE user_id = '${userId.id}' AND status = '${status}';`
-            } else {
-                getTasks = `SELECT * FROM tasks WHERE user_id = '${userId.id}';`
-            }
-
-            const allTasks = await db.all(getTasks)
-
-            if(allTasks.length > 0){
-                response.status(201).send(allTasks)
-            }
-            else{
-                response.status(400).send({message: "No Tasks Available"})
-            }
-        }
-        else{
-            response.status(400).send({message: "Invalid User Request"})
-        }
-    }
-    catch(e){
-        response.status(400).send({message: "Internal Server Error"})
-    }
-})
-
-
-// API - 6 -- Delete Task 
-
-app.delete('/api/tasks/:id', authenticateToken, async(request, response) => {
-    const {username} = request
-    const {id} = request.params
-
-    try{
-        const checkUser = `SELECT * FROM users WHERE username = '${username}';`
-        const userDetails = await db.get(checkUser)
-
-        if(userDetails !== undefined){
-            const getUserId = `SELECT id FROM users WHERE username = '${username}';`
-            const userId = await db.get(getUserId)
-
-            const getTask = `SELECT * FROM tasks WHERE user_id = '${userId.id}' AND id = '${id}';`
-            const verifyTask = await db.get(getTask)
-
-            if(verifyTask){
-                const deleteTask = `DELETE FROM tasks WHERE id = '${id}';`
-                await db.run(deleteTask)
-                response.status(201).send({message: "Task Deleted Successfully"})
-            }
-            else{
-                response.status(400).send({message: "Invalid Task Details"})
-            }
-        }
-        else{
-            response.status(400).send({message: "Invalid User Request"})
+// API-6: Get tasks for User
+app.get('/tasks', middlewareJwtToken, (req, res) => {
+    db.get('SELECT id FROM users WHERE email = ?', [req.email], (err, user) => {
+        if (err || !user) {
+            return res.status(500).json({ errorMsg: 'Database error or user not found' });
         }
 
-    }   
-    catch(e){
-        response.status(500).send({message: "Internal Server Error"})
-    }
-})
+        db.all('SELECT * FROM tasks WHERE user_id = ?', [user.id], (err, tasks) => {
+            if (err) {
+                return res.status(500).json({ errorMsg: 'Database error' });
+            }
+            res.status(200).json(tasks);
+        });
+    });
+});
