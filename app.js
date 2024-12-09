@@ -93,7 +93,7 @@ const middlewareJwtToken = (req, res, next) => {
 };
 
 // API-1: Register a New User
-app.post('/register', (req, res) => {
+app.post('/api/auth/register', (req, res) => {
     const { username, email, password } = req.body;
 
     db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user) => {
@@ -120,7 +120,7 @@ app.post('/register', (req, res) => {
 });
 
 // API-2: User Login
-app.post('/login', (req, res) => {
+app.post('/api/auth/login', (req, res) => {
     const { email, password } = req.body;
 
     db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user) => {
@@ -143,7 +143,7 @@ app.post('/login', (req, res) => {
 });
 
 // API-3: Create a task
-app.post('/tasks', middlewareJwtToken, (req, res) => {
+app.post('/api/tasks', middlewareJwtToken, (req, res) => {
     const { title, description, status } = req.body;
 
     db.get('SELECT id FROM users WHERE email = ?', [req.email], (err, user) => {
@@ -165,7 +165,7 @@ app.post('/tasks', middlewareJwtToken, (req, res) => {
 });
 
 // API-4: Update a task
-app.put('/tasks/:id', middlewareJwtToken, (req, res) => {
+app.put('/api/tasks/:id', middlewareJwtToken, (req, res) => {
     const { id } = req.params;
     const { title, description, status } = req.body;
 
@@ -215,7 +215,7 @@ app.put('/tasks/:id', middlewareJwtToken, (req, res) => {
 });
 
 // API-5: Delete a task
-app.delete('/tasks/:id', middlewareJwtToken, (req, res) => {
+app.delete('/api/tasks/:id', middlewareJwtToken, (req, res) => {
     const { id } = req.params;
 
     db.get('SELECT id FROM users WHERE email = ?', [req.email], (err, user) => {
@@ -242,7 +242,7 @@ app.delete('/tasks/:id', middlewareJwtToken, (req, res) => {
 });
 
 // API-6: Get tasks for User
-app.get('/tasks', middlewareJwtToken, (req, res) => {
+app.get('/api/tasks', middlewareJwtToken, (req, res) => {
     db.get('SELECT id FROM users WHERE email = ?', [req.email], (err, user) => {
         if (err || !user) {
             return res.status(500).json({ errorMsg: 'Database error or user not found' });
